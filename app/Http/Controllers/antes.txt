@@ -1,0 +1,133 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Http\Request;
+use App\Models\Turista;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Config;
+
+class DashboardController extends Controller
+{
+    public function index(Request $request)
+{
+    // Verificar si el usuario tiene permisos
+    $user = Auth::user();
+    if (!in_array($user->rol, ['admin', 'encargado_turismo'])) {
+        return redirect()->route('home')->with('error', 'No tienes permisos para acceder a esta sección.');
+    }
+
+    // Obtener los turistas confirmados (asistencia = 1) con paginación
+    $turistasConfirmados = Turista::where('asistencia', 1)
+        ->paginate(100); // 100 turistas por página (ajusta según sea necesario)
+//dd($turistasConfirmados);
+    // Obtener los documentos de los turistas confirmados
+    $documentosConfirmados = $turistasConfirmados->pluck('numero_documento')->toArray();
+    //dd($documentosConfirmados);
+    // Consultar la tabla de Oracle para obtener los detalles de los turistas confirmados
+    $detallesTuristasOracle = $this->obtenerDetallesTuristasOracle($documentosConfirmados);
+    dd($detallesTuristasOracle);
+    // Pasar los datos a la vista
+    return view('dashboard', compact('turistasConfirmados', 'detallesTuristasOracle'));
+}
+
+/**
+ * Obtiene los detalles de los turistas desde la tabla de Oracle.
+ *
+ * @param array $documentos
+ * @return \Illuminate\Support\Collection
+ */
+private function obtenerDetallesTuristasOracle(array $documentos)
+{
+    if (!$this->setFixedDatabaseCredentials()) {
+        return collect(); // Retorna una colección vacía si no hay conexión
+    }
+
+    try {
+        // Dividir los documentos en lotes más pequeños (por ejemplo, 100 documentos por lote)
+        $lotes = array_chunk($documentos, 100); // Ajusta el tamaño del lote según sea necesario
+
+        $resultados = collect();
+
+        foreach ($lotes as $lote) {
+            // Consultar la tabla de Oracle para obtener los detalles de los turistas
+            $datosLote = DB::connection('oracle_user')
+                ->table('consulta_ticket_sac') // Nombre de la tabla en Oracle
+                ->whereIn('num_doc', $lote) // Columna que contiene el número de documento
+                ->select('nro_ticket', 'fecha', 'tipo_mov', 'estado', 'num_doc', 'nombre_cliente')
+                ->get();
+
+            $resultados = $resultados->merge($datosLote);
+        }
+
+        return $resultados;
+    } catch (\Exception $e) {
+        logger()->error("Error al consultar la base de datos Oracle: " . $e->getMessage());
+        return collect(); // Retorna una colección vacía en caso de error
+    }
+}
+
+    /**
+     * Configura las credenciales fijas de la base de datos Oracle.
+     *
+     * @return bool
+     */
+    private function setFixedDatabaseCredentials()
+    {
+        try {
+            $username = 'cp2';
+            $password = 'cp2';
+
+            Config::set('database.connections.oracle_user.username', $username);
+            Config::set('database.connections.oracle_user.password', $password);
+
+            // Verificar conexión
+            DB::connection('oracle_user')->getPdo();
+
+            return true;
+        } catch (\Exception $e) {
+            logger()->error("Error de conexión a la base de datos Oracle: " . $e->getMessage());
+            return false;
+        }
+    }
+}
+
+/*public function index()
+    {
+        // Verificar si el usuario tiene permisos
+        $user = Auth::user();
+
+
+        // Obtener la fecha actual
+        $fechaActual = now()->toDateString();
+
+        // Contar turistas confirmados (asistencia = 1)
+        $turistasConfirmados = Turista::whereDate('fecha', $fechaActual)
+            ->where('asistencia', 1)
+            ->count();
+
+        // Contar turistas sin confirmar (asistencia = 0)
+        $turistasSinConfirmar = Turista::whereDate('fecha', $fechaActual)
+            ->where('asistencia', 0)
+            ->count();
+
+        // Obtener los documentos de los turistas confirmados
+        $documentosConfirmados = Turista::whereDate('fecha', $fechaActual)
+            ->where('asistencia', 1)
+            ->pluck('numero_documento')
+            ->toArray();
+
+        // Verificar si los documentos existen en la tabla de Oracle
+        $documentosEnOracle = $this->verificarDocumentosEnOracle($documentosConfirmados);
+
+        // Contar cuántos documentos existen en Oracle
+        $documentosExistentes = count($documentosEnOracle);
+
+        // Pasar los contadores a la vista
+        return view('dashboard', compact(
+            'turistasConfirmados',
+            'turistasSinConfirmar',
+            'documentosExistentes'
+        ));
+    }*/
